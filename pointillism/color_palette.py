@@ -1,47 +1,89 @@
+from __future__ import annotations
+
+import math
+from typing import Iterable, List, Tuple
+
 import cv2
 import numpy as np
-import math
 from sklearn.cluster import KMeans
+
 from .utils import limit_size, regulate
 
 
 class ColorPalette:
-    def __init__(self, colors, base_len=0):
-        self.colors = colors
-        self.base_len = base_len if base_len > 0 else len(colors)
+    def __init__(self, colors: np.ndarray, base_len: int = 0):
+        self.colors = np.asarray(colors, dtype=np.float32)
+        self.base_len = base_len if base_len > 0 else len(self.colors)
 
     @staticmethod
-    def from_image(img, n, max_img_size=200, n_init=10):
-        # scale down the image to speedup kmeans
-        img = limit_size(img, max_img_size)
+    def from_image(
+        img: np.ndarray,
+        n: int,
+        max_img_size: int = 200,
+        n_init: int | str = "auto",
+    ) -> "ColorPalette":
+        """Extract dominant colors from an image using KMeans."""
 
-        clt = KMeans(n_clusters=n, n_jobs=1, n_init=n_init)
-        clt.fit(img.reshape(-1, 3))
+        # Downscale for performance
+        img_small = limit_size(img, max_img_size)
+
+        pixels = img_small.reshape(-1, 3)
+
+        clt = KMeans(
+            n_clusters=n,
+            n_init=n_init,  # modern sklearn
+            random_state=42,  # reproducibility
+        )
+        clt.fit(pixels)
 
         return ColorPalette(clt.cluster_centers_)
 
-    def extend(self, extensions):
-        extension = [regulate(self.colors.reshape((1, len(self.colors), 3)).astype(np.uint8), *x).reshape((-1, 3)) for x
-                     in
-                     extensions]
+    def extend(
+        self,
+        extensions: Iterable[Tuple[int, int, int]],
+    ) -> "ColorPalette":
+        """Extend palette with regulated variations."""
 
-        return ColorPalette(np.vstack([self.colors.reshape((-1, 3))] + extension), self.base_len)
+        base_colors = self.colors.astype(np.uint8).reshape(1, -1, 3)
 
-    def to_image(self):
+        extended_sets: List[np.ndarray] = []
+        for ext in extensions:
+            regulated = regulate(base_colors, *ext).reshape(-1, 3)
+            extended_sets.append(regulated)
+
+        combined = np.vstack([self.colors.reshape(-1, 3), *extended_sets])
+
+        return ColorPalette(combined, self.base_len)
+
+    def to_image(self, cell_size: int = 80) -> np.ndarray:
+        """Render palette as a grid image."""
+
         cols = self.base_len
-        rows = int(math.ceil(len(self.colors) / cols))
+        rows = math.ceil(len(self.colors) / cols)
 
-        res = np.zeros((rows * 80, cols * 80, 3), dtype=np.uint8)
-        for y in range(rows):
-            for x in range(cols):
-                if y * cols + x < len(self.colors):
-                    color = [int(c) for c in self.colors[y * cols + x]]
-                    cv2.rectangle(res, (x * 80, y * 80), (x * 80 + 80, y * 80 + 80), color, -1)
+        result = np.zeros(
+            (rows * cell_size, cols * cell_size, 3),
+            dtype=np.uint8,
+        )
 
-        return res
+        for idx, color in enumerate(self.colors):
+            y = idx // cols
+            x = idx % cols
 
-    def __len__(self):
+            color_uint8 = tuple(int(c) for c in color)
+
+            cv2.rectangle(
+                result,
+                (x * cell_size, y * cell_size),
+                ((x + 1) * cell_size, (y + 1) * cell_size),
+                color_uint8,
+                -1,
+            )
+
+        return result
+
+    def __len__(self) -> int:
         return len(self.colors)
 
-    def __getitem__(self, item):
+    def __getitem__(self, item: int) -> np.ndarray:
         return self.colors[item]
